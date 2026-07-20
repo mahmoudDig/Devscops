@@ -23,6 +23,11 @@ app.get("/danger", (req, res) => {
     res.send("done");
 });
 
+app.get("/danger", (req, res) => {
+    eval(req.query.code);
+    res.send("Done");
+});
+
 
 
 app.listen(PORT, () => {
