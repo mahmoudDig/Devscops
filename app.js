@@ -16,6 +16,15 @@ app.get("/health", (req, res) => {
     });
 });
 
+
+app.get("/danger", (req, res) => {
+    eval(req.query.code);
+
+    res.send("done");
+});
+
+
+
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
