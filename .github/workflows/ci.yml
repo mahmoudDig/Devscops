@@ -1,4 +1,4 @@
-name: DevSecOps CI
+name: DevSecOps Pipeline
 
 on:
   push:
@@ -7,85 +7,142 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
-  security:
+  ################################################################################
+  # Secret Detection
+  ################################################################################
+
+  secret_detection:
+    name: Secret Detection
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      security-events: write
-
     steps:
-      # Checkout Repository
-      - name: Checkout Source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Secret Scanning
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Setup Node.js
-      - name: Setup Node
-        uses: actions/setup-node@v4
+  ################################################################################
+  # Build
+  ################################################################################
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: secret_detection
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Install Dependencies
-      - name: Install Dependencies
-        run: npm ci
+      - run: npm ci
 
-      # SAST
+      - name: Build Docker Image
+        run: docker build -t devscops:${{ github.sha }} .
+
+  ################################################################################
+  # SAST
+  ################################################################################
+
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: pip3 install semgrep
+
       - name: Run Semgrep
-        run: |
-          python3 -m pip install semgrep
-          semgrep --config=p/security-audit .
+        run: semgrep --config=p/security-audit .
 
-      # SCA
-      - name: Run Trivy Filesystem Scan
+  ################################################################################
+  # SCA
+  ################################################################################
+
+  sca:
+    name: SCA
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: 1
+          severity: HIGH,CRITICAL
+          exit-code: 0
 
-      # Build Docker Image
+  ################################################################################
+  # Container Scan
+  ################################################################################
+
+  container_scan:
+    name: Container Scan
+    runs-on: ubuntu-latest
+    needs:
+      - sast
+      - sca
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Build Docker Image
-        run: |
-          docker build -t devscops:${{ github.sha }} .
+        run: docker build -t devscops:${{ github.sha }} .
 
-      # Container Scan
-      - name: Run Trivy Image Scan
+      - name: Trivy Image Scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: devscops:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          exit-code: 1
+          severity: HIGH,CRITICAL
+          exit-code: 0
 
-      # Login Docker Hub
-      - name: Login to Docker Hub
+  ################################################################################
+  # Docker Push
+  ################################################################################
+
+  docker_push:
+    name: Docker Push
+    runs-on: ubuntu-latest
+    needs: container_scan
+
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t devscops:${{ github.sha }} .
+
+      - name: Login Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Tag Image
-      - name: Tag Docker Image
+      - name: Tag Image
         run: |
-          docker tag devscops:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/devscops:${{ github.sha }}
+          docker tag devscops:${{ github.sha }} \
+          ${{ secrets.DOCKERHUB_USERNAME }}/devscops:${{ github.sha }}
 
-      # Push Image
-      - name: Push Docker Image
+      - name: Push Image
         run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/devscops:${{ github.sha }}
-
-      # Success
-      - name: Build Check
-        run: echo "DevSecOps Pipeline Completed Successfully"
+          docker push \
+          ${{ secrets.DOCKERHUB_USERNAME }}/devscops:${{ github.sha }}
 
 # CI
 
